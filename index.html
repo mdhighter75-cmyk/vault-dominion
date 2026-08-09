@@ -58,6 +58,20 @@ function roundRect(x,y,w,h,r,fill,stroke){
   if(fill)ctx.fill();if(stroke)ctx.stroke();
 }
 function inRect(px,py,r){return px>=r.x&&px<=r.x+r.w&&py>=r.y&&py<=r.y+r.h}
+function uiScale(){return clamp(Math.min(W,H)/768,0.56,1.3);}
+function wrapLines(text,maxWidth,font){
+  ctx.font=font;
+  const words=text.split(' ');
+  const lines=[];
+  let cur='';
+  for(const w of words){
+    const test=cur?cur+' '+w:w;
+    if(ctx.measureText(test).width>maxWidth&&cur){lines.push(cur);cur=w;}
+    else cur=test;
+  }
+  if(cur)lines.push(cur);
+  return lines;
+}
 
 let pointer={x:0,y:0,down:false,clicked:false};
 function setPointer(e){pointer.x=e.clientX;pointer.y=e.clientY;}
@@ -286,46 +300,87 @@ function drawBG(){
   ctx.fillStyle=rg;ctx.fillRect(0,0,W,H);
 }
 
+function hudStacked(){return W<640;}
+function subtitleText(){
+  return 'Empire Value '+fmt(empireValue())+' / '+fmt(game.levelTarget)+'   Income/Tick '+fmt(totalIncomePerTick())+'   Debt '+fmt(game.debt)+' / '+fmt(game.debtCap);
+}
+function hudLayout(){
+  const S=uiScale(),stack=hudStacked();
+  if(!stack){
+    return {S,stack,hudH:86*S,titleSize:clamp(24*S,16,26),titleY:36,subSize:clamp(14*S,11,14),subY:60,subLines:[subtitleText()]};
+  }
+  const titleSize=clamp(W*0.052,14,22);
+  const subSize=clamp(W*0.03,10,13);
+  const subLines=wrapLines(subtitleText(),W-56,`${subSize}px Arial`).slice(0,2);
+  const barH=16*S;
+  const titleY=14+18*S;
+  const subY=titleY+16*S;
+  const subLineH=subSize*1.35;
+  const hudH=14+18*S+ subLines.length*subLineH +10*S+ barH +14*S;
+  return {S,stack,hudH,titleSize,titleY,subSize,subY,subLines,subLineH,barH};
+}
+function hudHeight(){return hudLayout().hudH;}
 function drawHUD(){
+  const L=hudLayout(),S=L.S,stack=L.stack,hudH=L.hudH;
   ctx.fillStyle='rgba(8,14,22,.75)';ctx.strokeStyle='rgba(100,180,255,.25)';ctx.lineWidth=2;
-  roundRect(14,14,W-28,86,16,true,true);
-  ctx.fillStyle='#eef8ff';ctx.font='bold 24px Arial';ctx.textAlign='left';ctx.textBaseline='middle';
-  ctx.fillText('ASSET DOMINION — LEVEL '+game.level,28,36);
-  ctx.font='14px Arial';ctx.fillStyle='#8cb8da';
-  ctx.fillText('Empire Value '+fmt(empireValue())+' / '+fmt(game.levelTarget)+'   Income/Tick '+fmt(totalIncomePerTick())+'   Debt '+fmt(game.debt)+' / '+fmt(game.debtCap),30,60);
+  roundRect(14,14,W-28,hudH,16,true,true);
+
+  ctx.fillStyle='#eef8ff';ctx.font=`bold ${L.titleSize}px Arial`;ctx.textAlign='left';ctx.textBaseline='middle';
+  ctx.fillText('ASSET DOMINION — LEVEL '+game.level,28,L.titleY);
+
+  ctx.font=`${L.subSize}px Arial`;ctx.fillStyle='#8cb8da';
+  if(stack){
+    let sy=L.subY;
+    for(const line of L.subLines){ctx.fillText(line,30,sy);sy+=L.subLineH;}
+  }else{
+    ctx.fillText(L.subLines[0],30,L.subY);
+  }
 
   const labels=['Cash','Assets','Stability','Threat'];
   const values=[game.cash,totalAssets(),game.stability,game.threat];
   const maxes=[10000000,10000000,100,100];
   const colors=['#45d0ff','#b86cff','#6eff98','#ff5c7c'];
-  const areaW=Math.min(W*0.54,760),bx=W-areaW-24,bw=(areaW-42)/4;
+  let bx,by,bw,gap,barH;
+  if(stack){
+    gap=8*S;barH=L.barH;
+    const areaW=W-28-28;bw=(areaW-3*gap)/4;
+    bx=28;by=14+hudH-barH-10*S;
+  }else{
+    gap=14;barH=18;
+    const areaW=Math.min(W*0.54,760);bw=(areaW-42)/4;
+    bx=W-areaW-24;by=26;
+  }
+  const barFont=stack?clamp(W*0.026,9,11):clamp(12*S,10,12);
   for(let i=0;i<4;i++){
-    const x=bx+i*(bw+14),y=26,p=clamp(values[i]/maxes[i],0,1);
-    ctx.fillStyle='rgba(255,255,255,.05)';roundRect(x,y,bw,18,8,true,false);
-    ctx.fillStyle=colors[i];roundRect(x,y,bw*p,18,8,true,false);
-    ctx.fillStyle='#d7eaff';ctx.font='12px Arial';ctx.textAlign='left';
+    const x=bx+i*(bw+gap),y=by,p=clamp(values[i]/maxes[i],0,1);
+    ctx.fillStyle='rgba(255,255,255,.05)';roundRect(x,y,bw,barH,8,true,false);
+    ctx.fillStyle=colors[i];roundRect(x,y,bw*p,barH,8,true,false);
+    ctx.fillStyle='#d7eaff';ctx.font=`${barFont}px Arial`;ctx.textAlign='left';
     const val=i<2?fmt(values[i]):values[i].toFixed(0);
-    ctx.fillText(labels[i]+' '+val,x,y-6);
+    ctx.fillText(labels[i]+' '+val,x,y-6*S);
   }
 }
 
 function drawPanels(){
+  const S=uiScale();
   const mobile=W<900;
-  const topY=106, bottomPad=mobile?150:108;
+  const topY=14+hudHeight()+8, bottomPad=mobile?150*S:108*S;
   const left={x:18,y:topY,w:mobile?W-36:W*0.5-28,h:mobile?(H-topY-bottomPad)*0.48:H-topY-bottomPad};
   const right={x:mobile?18:W*0.5+10,y:mobile?left.y+left.h+14:topY,w:mobile?W-36:W*0.5-28,h:mobile?H-(left.y+left.h+14)-bottomPad:H-topY-bottomPad};
   ctx.fillStyle='rgba(10,16,26,.72)';ctx.strokeStyle='rgba(120,180,255,.22)';ctx.lineWidth=2;
   roundRect(left.x,left.y,left.w,left.h,18,true,true);
   roundRect(right.x,right.y,right.w,right.h,18,true,true);
 
-  ctx.fillStyle='#dff';ctx.font='bold 20px Arial';ctx.textAlign='left';
-  ctx.fillText('Asset Matrix',left.x+16,left.y+28);
-  ctx.fillText('Empire Controls',right.x+16,right.y+28);
+  const headFont=clamp(20*S,15,20);
+  ctx.fillStyle='#dff';ctx.font=`bold ${headFont}px Arial`;ctx.textAlign='left';
+  ctx.fillText('Asset Matrix',left.x+16,left.y+22*S+6);
+  ctx.fillText('Empire Controls',right.x+16,right.y+22*S+6);
 
-  const rowH=(left.h-64)/5;
+  const nameFont=clamp(16*S,12,16),priceFont=clamp(13*S,10,13);
+  const rowH=(left.h-64*S)/5;
   for(let i=0;i<game.assets.length;i++){
-    const a=game.assets[i],y=left.y+42+i*rowH;
-    const row={x:left.x+12,y:y,w:left.w-24,h:rowH-10};
+    const a=game.assets[i],y=left.y+42*S+i*rowH;
+    const row={x:left.x+12,y:y,w:left.w-24,h:rowH-10*S};
     const selected=game.selected===i;
     ctx.fillStyle=selected?'rgba(70,170,255,.12)':'rgba(255,255,255,.03)';
     ctx.strokeStyle=selected?'rgba(90,240,255,.85)':'rgba(255,255,255,.08)';
@@ -334,43 +389,47 @@ function drawPanels(){
     ctx.shadowBlur=0;
     if(pointer.clicked&&inRect(pointer.x,pointer.y,row)){game.selected=i;beep(330,.04,'square',.02);}
     ctx.fillStyle=a.color;ctx.beginPath();ctx.arc(row.x+20,row.y+row.h/2,7,0,Math.PI*2);ctx.fill();
-    ctx.fillStyle='#eef';ctx.font='16px Arial';ctx.fillText(a.name,row.x+34,row.y+22);
-    ctx.fillStyle='#83b8d8';ctx.font='13px Arial';
+    ctx.fillStyle='#eef';ctx.font=`${nameFont}px Arial`;ctx.fillText(a.name,row.x+34,row.y+row.h*0.38);
+    ctx.fillStyle='#83b8d8';ctx.font=`${priceFont}px Arial`;
     const txt=mobile?('Price '+fmt(a.price)+' | Income '+fmt(a.income)+' | Owned '+a.owned):('Price '+fmt(a.price)+'   Income '+fmt(a.income)+'/3s   Owned '+a.owned);
-    ctx.fillText(txt,row.x+34,row.y+44);
+    ctx.fillText(txt,row.x+34,row.y+row.h*0.76);
   }
 
   const rx=right.x+14,rw=right.w-28;
   const s=game.assets[game.selected];
-  ctx.fillStyle='#8fb9d8';ctx.font='15px Arial';
-  ctx.fillText('Selected Asset',rx,right.y+58);
+  const labelFont=clamp(15*S,11,15),bigFont=clamp(19*S,14,19),bodyFont=clamp(14*S,11,14);
+  ctx.fillStyle='#8fb9d8';ctx.font=`${labelFont}px Arial`;
+  ctx.fillText('Selected Asset',rx,right.y+58*S);
   ctx.fillStyle='rgba(255,255,255,.04)';ctx.strokeStyle='rgba(255,255,255,.08)';
-  roundRect(rx,right.y+70,rw,mobile?100:92,14,true,true);
-  ctx.fillStyle=s.color;ctx.font='bold 19px Arial';ctx.fillText(s.name,rx+14,right.y+96);
-  ctx.fillStyle='#dbeeff';ctx.font='14px Arial';
+  const cardH=mobile?100*S:92*S;
+  roundRect(rx,right.y+70*S,rw,cardH,14,true,true);
+  ctx.fillStyle=s.color;ctx.font=`bold ${bigFont}px Arial`;ctx.fillText(s.name,rx+14,right.y+70*S+24*S);
+  ctx.fillStyle='#dbeeff';ctx.font=`${bodyFont}px Arial`;
   if(mobile){
-    ctx.fillText('Price: '+fmt(s.price),rx+14,right.y+122);
-    ctx.fillText('Income: '+fmt(s.income)+' / 3s',rx+14,right.y+144);
-    ctx.fillText('Owned: '+s.owned+'   Threat: +'+(1.6+game.selected*0.7).toFixed(1),rx+14,right.y+166);
+    ctx.fillText('Price: '+fmt(s.price),rx+14,right.y+70*S+50*S);
+    ctx.fillText('Income: '+fmt(s.income)+' / 3s',rx+14,right.y+70*S+72*S);
+    ctx.fillText('Owned: '+s.owned+'   Threat: +'+(1.6+game.selected*0.7).toFixed(1),rx+14,right.y+70*S+94*S);
   }else{
-    ctx.fillText('Price: '+fmt(s.price),rx+14,right.y+122);
-    ctx.fillText('Passive Income: '+fmt(s.income)+' every 3s',rx+150,right.y+122);
-    ctx.fillText('Owned: '+s.owned,rx+14,right.y+144);
-    ctx.fillText('Threat Gain: +'+(1.6+game.selected*0.7).toFixed(1),rx+150,right.y+144);
+    ctx.fillText('Price: '+fmt(s.price),rx+14,right.y+70*S+50*S);
+    ctx.fillText('Passive Income: '+fmt(s.income)+' every 3s',rx+150,right.y+70*S+50*S);
+    ctx.fillText('Owned: '+s.owned,rx+14,right.y+70*S+72*S);
+    ctx.fillText('Threat Gain: +'+(1.6+game.selected*0.7).toFixed(1),rx+150,right.y+70*S+72*S);
   }
 
-  const buttonsY=mobile?right.y+184:right.y+176;
+  const btnH=clamp(44*S,36,44),btnH2=clamp(48*S,38,48),btnGap=8*S;
+  const buttonsY=right.y+70*S+cardH+16*S;
   const bw=(rw-12)/2;
-  if(btn(rx,buttonsY,bw,44,'BUY',false)) buyAsset(game.selected);
-  if(btn(rx+bw+12,buttonsY,bw,44,'SELL',false)) sellAsset(game.selected);
-  if(btn(rx,buttonsY+56,rw,48,'HOSTILE TAKEOVER',false)) hostileTakeover();
+  if(btn(rx,buttonsY,bw,btnH,'BUY',false)) buyAsset(game.selected);
+  if(btn(rx+bw+12,buttonsY,bw,btnH,'SELL',false)) sellAsset(game.selected);
+  if(btn(rx,buttonsY+btnH+btnGap,rw,btnH2,'HOSTILE TAKEOVER',false)) hostileTakeover();
 
-  const sy=buttonsY+126;
-  ctx.fillStyle='#dff';ctx.font='bold 17px Arial';ctx.fillText('Status',rx,sy);
-  const sh=Math.max(120,right.y+right.h-sy-16);
+  const statusHeadFont=clamp(17*S,13,17),statusFont=clamp(14*S,10,14),lineH=clamp(24*S,15,24);
+  const sy=buttonsY+btnH+btnGap+btnH2+30*S;
+  ctx.fillStyle='#dff';ctx.font=`bold ${statusHeadFont}px Arial`;ctx.fillText('Status',rx,sy);
+  const sh=Math.max(90*S,right.y+right.h-sy-16);
   ctx.fillStyle='rgba(255,255,255,.04)';ctx.strokeStyle='rgba(255,255,255,.08)';
   roundRect(rx,sy+12,rw,sh,14,true,true);
-  ctx.fillStyle='#cfe7ff';ctx.font='14px Arial';
+  ctx.fillStyle='#cfe7ff';ctx.font=`${statusFont}px Arial`;
   const lines=[
     'Level '+game.level+' / '+MAXLEVEL+' — Reach '+fmt(game.levelTarget)+' empire value to advance.',
     'Lose if Stability reaches 0 or Debt reaches '+fmt(game.debtCap)+'.',
@@ -380,18 +439,21 @@ function drawPanels(){
     'Next family bill: '+game.billTimer.toFixed(1)+'s',
     'Best Level Reached: '+bestLevel
   ];
-  for(let i=0;i<lines.length;i++) ctx.fillText(lines[i],rx+14,sy+38+i*24);
+  const maxLines=Math.max(1,Math.floor((sh-24*S)/lineH));
+  for(let i=0;i<lines.length&&i<maxLines;i++) ctx.fillText(lines[i],rx+14,sy+lineH*1.2+i*lineH);
 }
 
 function drawNotices(){
-  let x=22,y=H-160;
+  const S=uiScale(),font=clamp(14*S,10,14),boxH=clamp(30*S,22,30),gap=clamp(36*S,26,36);
+  const boxW=Math.min(W*0.9,W*0.54,460);
+  let x=22,y=H-160*S;
   for(let i=notices.length-1;i>=0;i--){
     const n=notices[i],a=Math.min(1,n.t);
     ctx.globalAlpha=a;
     ctx.fillStyle='rgba(8,16,26,.85)';ctx.strokeStyle='rgba(120,180,255,.2)';
-    roundRect(x,y,Math.min(W*0.54,460),30,10,true,true);
-    ctx.fillStyle=n.col;ctx.font='14px Arial';ctx.textAlign='left';ctx.textBaseline='middle';
-    ctx.fillText(n.text,x+12,y+18);y-=36;
+    roundRect(x,y,boxW,boxH,10,true,true);
+    ctx.fillStyle=n.col;ctx.font=`${font}px Arial`;ctx.textAlign='left';ctx.textBaseline='middle';
+    ctx.fillText(n.text,x+12,y+boxH/2);y-=gap;
   }
   ctx.globalAlpha=1;
 }
@@ -403,7 +465,7 @@ function drawParticles(){
   ctx.globalAlpha=1;ctx.shadowBlur=0;
 }
 function drawTouch(){
-  const s=Math.min(W,H),r=s*0.065,pad=18,cx=pad+r*1.8,cy=H-pad-r*1.8,ax=W-pad-r*1.8,ay=H-pad-r*1.8;
+  const s=Math.min(W,H),r=Math.max(30,s*0.07),pad=18,cx=pad+r*1.8,cy=H-pad-r*1.8,ax=W-pad-r*1.8,ay=H-pad-r*1.8;
   const defs=[
     {k:'left',x:cx-r*1.2,y:cy,w:r*1.2,h:r*1.2,l:'◄'},
     {k:'right',x:cx+r*0.2,y:cy,w:r*1.2,h:r*1.2,l:'►'},
@@ -438,14 +500,20 @@ function restartGame(){resetGame();state='play';beep(640,.08,'triangle',.03);}
 
 function drawStart(){
   drawBG();
-  const cx=W/2,cy=H/2;
+  const S=uiScale();
+  const cx=W/2;
+  const mw=Math.min(W*0.9,680),mx=cx-mw/2,my=H*0.08,mh=H*0.86;
   ctx.fillStyle='rgba(8,14,22,.82)';ctx.strokeStyle='rgba(120,200,255,.28)';ctx.lineWidth=2;
-  roundRect(W*0.12,H*0.14,W*0.76,H*0.72,24,true,true);
+  roundRect(mx,my,mw,mh,24,true,true);
   ctx.textAlign='center';ctx.fillStyle='#eef9ff';
-  ctx.font='bold '+Math.max(34,W*0.045)+'px Arial';ctx.fillText('ASSET DOMINION',cx,cy-140);
-  ctx.fillStyle='#8fe7ff';ctx.font='18px Arial';ctx.fillText('Private Imperial Asset Empire Simulator',cx,cy-102);
-  ctx.fillStyle='#c9dcf0';ctx.font='16px Arial';
-  const lines=[
+
+  const innerW=mw-56;
+  const titleFont=clamp(mw*0.088,22,40);
+  const subFont=clamp(mw*0.032,13,18);
+  const bodyFont=clamp(mw*0.028,12,16);
+  const btnW=Math.min(240,mw*0.66),btnH=clamp(52*S,44,58);
+
+  const bodyLines=[
     'Start with $10,000 and build a futuristic corporate empire.',
     'Select assets, then BUY or SELL to grow passive income every 3 seconds.',
     'Buying more assets raises Threat. High debt and overexpansion hurt Stability.',
@@ -455,28 +523,57 @@ function drawStart(){
     'Keyboard: Arrows/WASD to select, Left/Right to sell/buy, Space for takeover.',
     'Touch/Mouse: Tap assets and interface buttons. Fully playable on phones.'
   ];
-  for(let i=0;i<lines.length;i++)ctx.fillText(lines[i],cx,cy-36+i*28);
-  if(btn(cx-110,cy+150,220,58,'ENTER THE MATRIX',true)) startGame();
+  const wrapped=[];
+  for(const l of bodyLines) wrapped.push(...wrapLines(l,innerW,`${bodyFont}px Arial`));
+  const bodyLineH=bodyFont*1.55;
+
+  let y=my+titleFont+22;
+  ctx.font=`bold ${titleFont}px Arial`;ctx.fillText('ASSET DOMINION',cx,y);
+  y+=subFont+18;
+  ctx.fillStyle='#8fe7ff';ctx.font=`${subFont}px Arial`;ctx.fillText('Private Imperial Asset Empire Simulator',cx,y);
+  y+=bodyLineH*1.4;
+  ctx.fillStyle='#c9dcf0';ctx.font=`${bodyFont}px Arial`;
+  for(const line of wrapped){ctx.fillText(line,cx,y);y+=bodyLineH;}
+
+  const btnY=Math.min(y+bodyLineH*0.6, my+mh-btnH-24);
+  if(btn(cx-btnW/2,btnY,btnW,btnH,'ENTER THE MATRIX',true)) startGame();
   drawTouch();
 }
 
 function drawEnd(win){
   drawBG();drawHUD();drawPanels();drawNotices();drawParticles();
+  const S=uiScale();
   ctx.fillStyle='rgba(0,0,0,.58)';ctx.fillRect(0,0,W,H);
+  const mw=Math.min(W*0.9,620),mx=(W-mw)/2,my=H*0.18,mh=Math.min(H*0.64,520);
   ctx.fillStyle='rgba(8,14,22,.92)';
   ctx.strokeStyle=win?'rgba(120,255,180,.45)':'rgba(255,100,140,.45)';
   ctx.lineWidth=2.5;
-  roundRect(W*0.24,H*0.22,W*0.52,H*0.5,22,true,true);
+  roundRect(mx,my,mw,mh,22,true,true);
   ctx.textAlign='center';ctx.fillStyle='#fff';
-  ctx.font='bold '+Math.max(32,W*0.04)+'px Arial';
-  ctx.fillText(win?'EMPIRE ASCENDANT':'EMPIRE COMPROMISED',W/2,H*0.34);
-  ctx.fillStyle=win?'#9ff0b1':'#ff9fb2';ctx.font='18px Arial';
-  ctx.fillText(win?'You conquered all '+MAXLEVEL+' levels of the dominion.':'Your empire collapsed under pressure.',W/2,H*0.42);
-  ctx.fillStyle='#dcecff';ctx.font='17px Arial';
-  ctx.fillText('Final Score: '+Math.floor(game.score)+'   Level Reached: '+game.level+' / '+MAXLEVEL,W/2,H*0.49);
-  ctx.fillText('Empire Value: '+fmt(empireValue()),W/2,H*0.54);
-  ctx.fillText('Debt: '+fmt(game.debt)+'   Stability: '+game.stability.toFixed(0)+'   Best Level Ever: '+bestLevel,W/2,H*0.59);
-  if(btn(W/2-110,H*0.64,220,56,'RESTART GAME',true)) restartGame();
+  const innerW=mw-48;
+  const titleFont=clamp(mw*0.065,20,32),subFont=clamp(mw*0.032,12,18),bodyFont=clamp(mw*0.03,11,17);
+  const cx=W/2;
+  let y=my+titleFont+16;
+  ctx.font=`bold ${titleFont}px Arial`;
+  ctx.fillText(win?'EMPIRE ASCENDANT':'EMPIRE COMPROMISED',cx,y);
+  y+=subFont+16;
+  ctx.fillStyle=win?'#9ff0b1':'#ff9fb2';ctx.font=`${subFont}px Arial`;
+  for(const line of wrapLines(win?'You conquered all '+MAXLEVEL+' levels of the dominion.':'Your empire collapsed under pressure.',innerW,`${subFont}px Arial`)){
+    ctx.fillText(line,W/2,y);y+=subFont*1.4;
+  }
+  y+=bodyFont*0.5;
+  ctx.fillStyle='#dcecff';ctx.font=`${bodyFont}px Arial`;
+  const bodyLines=[
+    'Final Score: '+Math.floor(game.score)+'   Level Reached: '+game.level+' / '+MAXLEVEL,
+    'Empire Value: '+fmt(empireValue()),
+    'Debt: '+fmt(game.debt)+'   Stability: '+game.stability.toFixed(0)+'   Best Level Ever: '+bestLevel
+  ];
+  for(const raw of bodyLines){
+    for(const line of wrapLines(raw,innerW,`${bodyFont}px Arial`)){ctx.fillText(line,W/2,y);y+=bodyFont*1.5;}
+  }
+  const btnW=Math.min(220,mw*0.6),btnH=clamp(52*S,42,56);
+  const btnY=Math.min(y+bodyFont, my+mh-btnH-20);
+  if(btn(W/2-btnW/2,btnY,btnW,btnH,'RESTART GAME',true)) restartGame();
 }
 
 function loop(ts){
