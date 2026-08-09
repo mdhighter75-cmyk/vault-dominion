@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Vault Dominion</title>
+
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#05070c" />
+<meta name="background-color" content="#05070c" />
+<meta name="description" content="Build a futuristic corporate empire, manage debt and stability, and survive 8 escalating levels of asset dominion." />
+
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Vault Dominion" />
+
+<style>
+html,body{margin:0;padding:0;overflow:hidden;background:#05070c;color:#d9ecff;font-family:Arial,Helvetica,sans-serif;touch-action:none}
+canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+(() => {
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+let W=innerWidth,H=innerHeight,DPR=Math.min(devicePixelRatio||1,2);
+function resize(){W=innerWidth;H=innerHeight;DPR=Math.min(devicePixelRatio||1,2);canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);}
+addEventListener('resize',resize);resize();
+
+const keys={},touchState={up:0,down:0,left:0,right:0,space:0};
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();keys[k]=1;if(['arrowup','arrowdown','arrowleft','arrowright',' ','spacebar'].includes(k))e.preventDefault();});
+addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=0;});
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
+let audioCtx=null;
+function beep(f=440,d=0.08,t='sine',v=0.03){
+  try{
+    if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==='suspended') audioCtx.resume();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain(),n=audioCtx.currentTime;
+    o.type=t;o.frequency.setValueAtTime(f,n);
+    g.gain.setValueAtTime(v,n);g.gain.exponentialRampToValueAtTime(0.0001,n+d);
+    o.connect(g);g.connect(audioCtx.destination);o.start(n);o.stop(n+d);
+  }catch(e){}
+}
+function rand(a,b){return Math.random()*(b-a)+a}
+function clamp(v,a,b){return v<a?a:v>b?b:v}
+function fmt(n){const s=n<0?'-':'';n=Math.abs(n);if(n>=1e6)return s+'$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return s+'$'+(n/1e3).toFixed(1)+'K';return s+'$'+n.toFixed(0);}
+function roundRect(x,y,w,h,r,fill,stroke){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);
+  if(fill)ctx.fill();if(stroke)ctx.stroke();
+}
+function inRect(px,py,r){return px>=r.x&&px<=r.x+r.w&&py>=r.y&&py<=r.y+r.h}
+
+let pointer={x:0,y:0,down:false,clicked:false};
+function setPointer(e){pointer.x=e.clientX;pointer.y=e.clientY;}
+canvas.addEventListener('pointerdown',e=>{pointer.down=true;pointer.clicked=true;setPointer(e);if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();});
+canvas.addEventListener('pointermove',e=>setPointer(e));
+addEventListener('pointerup',()=>{pointer.down=false;});
+canvas.addEventListener('touchstart',e=>{const t=e.touches[0];if(t){pointer.down=true;pointer.clicked=true;pointer.x=t.clientX;pointer.y=t.clientY;}e.preventDefault();},{passive:false});
+canvas.addEventListener('touchmove',e=>{const t=e.touches[0];if(t){pointer.x=t.clientX;pointer.y=t.clientY;}e.preventDefault();},{passive:false});
+addEventListener('touchend',()=>{pointer.down=false;for(const k in touchState)touchState[k]=0;},{passive:false});
+
+const stars=[...Array(140)].map(()=>({x:Math.random(),y:Math.random(),s:rand(0.5,2),a:rand(0.12,0.9),v:rand(0.003,0.02)}));
+let state='start',last=0,game,particles=[],notices=[];
+
+const MAXLEVEL=8;
+let bestLevel=1;
+try{bestLevel=parseInt(localStorage.getItem('vaultDominionBestLevel')||'1',10)||1;}catch(e){}
+function saveBestLevel(lv){bestLevel=Math.max(bestLevel,lv);try{localStorage.setItem('vaultDominionBestLevel',String(bestLevel));}catch(e){}}
+function levelTarget(lv){return Math.round(10000000*Math.pow(1.55,lv-1)/1000)*1000;}
+function debtCapFor(lv){return 5000000+(lv-1)*1400000;}
+function eventRangeFor(lv){const shrink=(lv-1)*1.1;return[Math.max(7,15-shrink),Math.max(10,20-shrink)];}
+function billRangeFor(lv){const shrink=(lv-1)*2.6;return[Math.max(12,26-shrink),Math.max(18,34-shrink)];}
+function lvlMul(lv){return 1+(lv-1)*0.22;}
+const LIFE_EVENTS=['School tuition due','Medical bill arrives','Family emergency fund needed',"Kid's braces bill",'Home repair emergency',"Kid's college fund shortfall",'Unexpected daycare cost','Family car repair'];
+
+function resetGame(){
+  game={
+    t:0,score:0,cash:1000000,debt:0,stability:100,threat:0,selected:0,level:1,
+    levelTarget:levelTarget(1),debtCap:debtCapFor(1),
+    eventTimer:rand(...eventRangeFor(1)),billTimer:rand(...billRangeFor(1)),incomeTimer:3,nextIncomeIn:3,
+    assets:[
+      {name:'Real Estate',price:250000,income:18000,owned:0,color:'#45d0ff'},
+      {name:'Technology Company',price:600000,income:42000,owned:0,color:'#b86cff'},
+      {name:'Energy Plant',price:900000,income:70000,owned:0,color:'#57ff9d'},
+      {name:'Media Network',price:1400000,income:110000,owned:0,color:'#ff6ea8'},
+      {name:'AI Lab',price:2200000,income:180000,owned:0,color:'#ffe066'}
+    ]
+  };
+  particles=[];notices=[];control.cool=0;
+  addNotice('Empire initialized. Level 1 — Reach '+fmt(levelTarget(1))+' to advance.','#8df');
+}
+
+function levelUp(){
+  game.level++;
+  game.levelTarget=levelTarget(game.level);
+  game.debtCap=debtCapFor(game.level);
+  game.stability=clamp(game.stability+30,0,100);
+  game.threat=clamp(game.threat-25,0,100);
+  saveBestLevel(game.level);
+  addNotice('LEVEL '+game.level+' — Empire expands. Pressure rising.','#ffe066');
+  beep(880,.14,'triangle',.04);beep(1100,.16,'triangle',.03);
+  spark(W*0.5,H*0.3,'#ffe066',26);
+}
+resetGame();
+
+function addNotice(text,col='#8df'){notices.push({text,col,t:3.5});if(notices.length>7)notices.shift();}
+function spark(x,y,c,n=12){for(let i=0;i<n;i++)particles.push({x,y,vx:rand(-90,90),vy:rand(-90,90),r:rand(1,3),t:rand(0.4,1),c});}
+function totalAssets(){let s=0;for(const a of game.assets)s+=a.price*a.owned;return s}
+function empireValue(){return game.cash+totalAssets()-game.debt}
+function totalIncomePerTick(){let s=0;for(const a of game.assets)s+=a.income*a.owned;return s}
+function totalOwned(){let s=0;for(const a of game.assets)s+=a.owned;return s}
+
+function buyAsset(i){
+  const a=game.assets[i];
+  if(game.cash>=a.price){game.cash-=a.price;}
+  else{const need=a.price-game.cash;game.debt+=need;game.cash=0;addNotice('Used debt financing: '+fmt(need),'#ffb366');}
+  a.owned++;
+  game.threat=clamp(game.threat+1.6+i*0.7,0,100);
+  game.score+=a.price*0.1;
+  addNotice('Bought '+a.name,'#5ff');
+  beep(560,.06,'sawtooth',.025);
+  spark(W*0.28,H*(0.26+i*0.11),'#4ef',14);
+}
+function sellAsset(i){
+  const a=game.assets[i];
+  if(a.owned<=0){addNotice('No '+a.name+' to sell','#f66');beep(180,.05,'square',.02);return;}
+  a.owned--;
+  const gain=a.price*0.78;
+  if(game.debt>0){const pay=Math.min(game.debt,gain);game.debt-=pay;game.cash+=gain-pay;}
+  else game.cash+=gain;
+  game.threat=clamp(game.threat-2.5,0,100);
+  addNotice('Sold '+a.name,'#faa');
+  beep(320,.06,'triangle',.025);
+  spark(W*0.28,H*(0.26+i*0.11),'#f77',10);
+}
+function hostileTakeover(){
+  const cost=800000;
+  if(game.cash+Math.max(0,5000-game.debt)<cost && game.cash<cost){addNotice('Not enough capital for takeover','#f66');beep(150,.08,'square',.03);return;}
+  if(game.cash>=cost) game.cash-=cost; else {game.debt+=cost-game.cash;game.cash=0;}
+  game.threat=clamp(game.threat+8,0,100);
+  const x=W*0.73,y=H*0.62;
+  if(Math.random()<0.45){
+    const options=game.assets.filter(a=>a.owned<8);
+    const a=options[(Math.random()*options.length)|0]||game.assets[(Math.random()*game.assets.length)|0];
+    a.owned++;
+    addNotice('Takeover succeeded: gained '+a.name,'#6ff');
+    beep(860,.09,'sawtooth',.03);
+    spark(x,y,'#6ff',24);
+  }else{
+    const loss=rand(300000,900000);
+    if(game.cash>=loss)game.cash-=loss;else{game.debt+=loss-game.cash;game.cash=0;}
+    game.stability=clamp(game.stability-rand(4,10),0,100);
+    addNotice('Takeover failed: loss '+fmt(loss),'#f66');
+    beep(120,.14,'square',.035);
+    spark(x,y,'#f55',18);
+  }
+}
+function familyBill(){
+  const m=lvlMul(game.level);
+  const pen=rand(180000,420000)*m;
+  const label=LIFE_EVENTS[(Math.random()*LIFE_EVENTS.length)|0];
+  game.debt+=pen;
+  game.stability=clamp(game.stability-2.5*m,0,100);
+  addNotice(label+': +'+fmt(pen),'#ff9955');
+  beep(240,.09,'triangle',.03);
+}
+
+function randomEvent(){
+  const r=Math.random(),m=lvlMul(game.level);
+  if(r<0.2){
+    const gain=Math.max(40000,totalIncomePerTick()*1.6)*(1+(game.level-1)*0.1);
+    game.cash+=gain;
+    addNotice('Market boom: +'+fmt(gain),'#7ff');
+    beep(720,.07);
+  }else if(r<0.4){
+    const loss=Math.min(Math.max(90000,totalAssets()*0.08),1500000)*m;
+    if(game.cash>=loss)game.cash-=loss;else{game.debt+=loss-game.cash;game.cash=0;}
+    game.stability=clamp(game.stability-5*m,0,100);
+    addNotice('Market crash: -'+fmt(loss),'#f99');
+    beep(220,.08,'square');
+  }else if(r<0.6){
+    game.stability=clamp(game.stability-9*m,0,100);
+    game.threat=clamp(game.threat+6*m,0,100);
+    addNotice('Cyberattack disrupted operations','#f88');
+    beep(170,.1,'square');
+  }else if(r<0.8){
+    const idx=(Math.random()*game.assets.length)|0,a=game.assets[idx];
+    a.owned++;
+    addNotice('Asset bonus: free '+a.name,'#9ff');
+    beep(820,.05);
+    spark(W*0.28,H*(0.26+idx*0.11),'#8fe',18);
+  }else{
+    const pen=rand(200000,700000)*m;
+    const label=LIFE_EVENTS[(Math.random()*LIFE_EVENTS.length)|0];
+    game.debt+=pen;
+    game.stability=clamp(game.stability-3*m,0,100);
+    addNotice(label+': +'+fmt(pen),'#ffb366');
+    beep(260,.08,'triangle');
+  }
+}
+
+function update(dt){
+  game.t+=dt;
+  const income=totalIncomePerTick();
+  game.incomeTimer-=dt;
+  if(game.incomeTimer<=0){
+    if(income>0){
+      if(game.debt>0){
+        const pay=Math.min(income,game.debt);
+        game.debt-=pay;game.cash+=income-pay;
+      }else game.cash+=income;
+      addNotice('Passive income tick: '+fmt(income),'#8fe');
+      beep(640,.03,'sine',.012);
+    }
+    game.incomeTimer=3;
+  }
+  game.nextIncomeIn=game.incomeTimer;
+
+  const owned=totalOwned(),assetsVal=totalAssets(),m=lvlMul(game.level);
+  game.threat=clamp(game.threat+(owned*0.12+assetsVal/15000000)*dt*m-0.35*dt,0,100);
+  const pressure=(owned>6?(owned-6)*0.9:0)+(game.debt/350000)+(game.threat/18);
+  game.stability=clamp(game.stability-pressure*dt*0.28*m+Math.max(0,7-owned)*dt*0.03,0,100);
+  if(game.debt>0) game.debt+=game.debt*(0.015+(game.level-1)*0.0015)*dt;
+
+  game.eventTimer-=dt;
+  if(game.eventTimer<=0){randomEvent();game.eventTimer=rand(...eventRangeFor(game.level));}
+
+  game.billTimer-=dt;
+  if(game.billTimer<=0){familyBill();game.billTimer=rand(...billRangeFor(game.level));}
+
+  game.score+=dt*(income*0.3+assetsVal*0.015+Math.max(0,100-game.threat));
+  if(empireValue()>=game.levelTarget){
+    if(game.level>=MAXLEVEL){state='win';beep(900,.18,'triangle',.04);addNotice('Victory achieved!','#9f9');saveBestLevel(game.level);}
+    else levelUp();
+  }
+  if(game.stability<=0||game.debt>=game.debtCap){state='lose';beep(90,.3,'sawtooth',.04);saveBestLevel(game.level);}
+
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];p.t-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=0.99;p.vy*=0.99;
+    if(p.t<=0)particles.splice(i,1);
+  }
+  for(let i=notices.length-1;i>=0;i--){notices[i].t-=dt;if(notices[i].t<=0)notices.splice(i,1);}
+}
+
+function btn(x,y,w,h,label,active){
+  const hot=inRect(pointer.x,pointer.y,{x,y,w,h}),glow=active||hot;
+  ctx.save();
+  ctx.fillStyle=glow?'rgba(40,120,220,0.25)':'rgba(20,28,40,0.8)';
+  ctx.strokeStyle=glow?'rgba(90,220,255,0.95)':'rgba(90,130,180,0.35)';
+  ctx.lineWidth=2;
+  ctx.shadowColor=glow?'#3cf':'transparent';ctx.shadowBlur=glow?16:0;
+  roundRect(x,y,w,h,12,true,true);ctx.shadowBlur=0;
+  const g=ctx.createLinearGradient(x,y,x,y+h);
+  g.addColorStop(0,glow?'rgba(120,220,255,.18)':'rgba(255,255,255,.04)');
+  g.addColorStop(1,'rgba(0,0,0,.05)');
+  ctx.fillStyle=g;roundRect(x+1,y+1,w-2,h-2,11,true,false);
+  ctx.fillStyle='#dff';ctx.font=`${Math.max(12,h*0.33)}px Arial`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(label,x+w/2,y+h/2);
+  ctx.restore();
+  return hot&&pointer.clicked;
+}
+
+function drawBG(){
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#060913');g.addColorStop(0.45,'#09111d');g.addColorStop(1,'#05070c');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  for(const s of stars){
+    s.y+=s.v*0.1;if(s.y>1)s.y=0;
+    ctx.globalAlpha=s.a;ctx.fillStyle='#bfe9ff';ctx.fillRect(s.x*W,s.y*H,s.s,s.s);
+  }
+  ctx.globalAlpha=1;
+  ctx.strokeStyle='rgba(60,100,140,0.08)';ctx.lineWidth=1;
+  const step=Math.max(40,Math.min(W,H)/12);
+  for(let x=0;x<W;x+=step){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=step){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  const rg=ctx.createRadialGradient(W*0.72,H*0.22,20,W*0.72,H*0.22,W*0.5);
+  rg.addColorStop(0,'rgba(0,180,255,0.12)');rg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=rg;ctx.fillRect(0,0,W,H);
+}
+
+function drawHUD(){
+  ctx.fillStyle='rgba(8,14,22,.75)';ctx.strokeStyle='rgba(100,180,255,.25)';ctx.lineWidth=2;
+  roundRect(14,14,W-28,86,16,true,true);
+  ctx.fillStyle='#eef8ff';ctx.font='bold 24px Arial';ctx.textAlign='left';ctx.textBaseline='middle';
+  ctx.fillText('ASSET DOMINION — LEVEL '+game.level,28,36);
+  ctx.font='14px Arial';ctx.fillStyle='#8cb8da';
+  ctx.fillText('Empire Value '+fmt(empireValue())+' / '+fmt(game.levelTarget)+'   Income/Tick '+fmt(totalIncomePerTick())+'   Debt '+fmt(game.debt)+' / '+fmt(game.debtCap),30,60);
+
+  const labels=['Cash','Assets','Stability','Threat'];
+  const values=[game.cash,totalAssets(),game.stability,game.threat];
+  const maxes=[10000000,10000000,100,100];
+  const colors=['#45d0ff','#b86cff','#6eff98','#ff5c7c'];
+  const areaW=Math.min(W*0.54,760),bx=W-areaW-24,bw=(areaW-42)/4;
+  for(let i=0;i<4;i++){
+    const x=bx+i*(bw+14),y=26,p=clamp(values[i]/maxes[i],0,1);
+    ctx.fillStyle='rgba(255,255,255,.05)';roundRect(x,y,bw,18,8,true,false);
+    ctx.fillStyle=colors[i];roundRect(x,y,bw*p,18,8,true,false);
+    ctx.fillStyle='#d7eaff';ctx.font='12px Arial';ctx.textAlign='left';
+    const val=i<2?fmt(values[i]):values[i].toFixed(0);
+    ctx.fillText(labels[i]+' '+val,x,y-6);
+  }
+}
+
+function drawPanels(){
+  const mobile=W<900;
+  const topY=106, bottomPad=mobile?150:108;
+  const left={x:18,y:topY,w:mobile?W-36:W*0.5-28,h:mobile?(H-topY-bottomPad)*0.48:H-topY-bottomPad};
+  const right={x:mobile?18:W*0.5+10,y:mobile?left.y+left.h+14:topY,w:mobile?W-36:W*0.5-28,h:mobile?H-(left.y+left.h+14)-bottomPad:H-topY-bottomPad};
+  ctx.fillStyle='rgba(10,16,26,.72)';ctx.strokeStyle='rgba(120,180,255,.22)';ctx.lineWidth=2;
+  roundRect(left.x,left.y,left.w,left.h,18,true,true);
+  roundRect(right.x,right.y,right.w,right.h,18,true,true);
+
+  ctx.fillStyle='#dff';ctx.font='bold 20px Arial';ctx.textAlign='left';
+  ctx.fillText('Asset Matrix',left.x+16,left.y+28);
+  ctx.fillText('Empire Controls',right.x+16,right.y+28);
+
+  const rowH=(left.h-64)/5;
+  for(let i=0;i<game.assets.length;i++){
+    const a=game.assets[i],y=left.y+42+i*rowH;
+    const row={x:left.x+12,y:y,w:left.w-24,h:rowH-10};
+    const selected=game.selected===i;
+    ctx.fillStyle=selected?'rgba(70,170,255,.12)':'rgba(255,255,255,.03)';
+    ctx.strokeStyle=selected?'rgba(90,240,255,.85)':'rgba(255,255,255,.08)';
+    ctx.shadowColor=selected?'#4ef':'transparent';ctx.shadowBlur=selected?14:0;
+    roundRect(row.x,row.y,row.w,row.h,14,true,true);
+    ctx.shadowBlur=0;
+    if(pointer.clicked&&inRect(pointer.x,pointer.y,row)){game.selected=i;beep(330,.04,'square',.02);}
+    ctx.fillStyle=a.color;ctx.beginPath();ctx.arc(row.x+20,row.y+row.h/2,7,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#eef';ctx.font='16px Arial';ctx.fillText(a.name,row.x+34,row.y+22);
+    ctx.fillStyle='#83b8d8';ctx.font='13px Arial';
+    const txt=mobile?('Price '+fmt(a.price)+' | Income '+fmt(a.income)+' | Owned '+a.owned):('Price '+fmt(a.price)+'   Income '+fmt(a.income)+'/3s   Owned '+a.owned);
+    ctx.fillText(txt,row.x+34,row.y+44);
+  }
+
+  const rx=right.x+14,rw=right.w-28;
+  const s=game.assets[game.selected];
+  ctx.fillStyle='#8fb9d8';ctx.font='15px Arial';
+  ctx.fillText('Selected Asset',rx,right.y+58);
+  ctx.fillStyle='rgba(255,255,255,.04)';ctx.strokeStyle='rgba(255,255,255,.08)';
+  roundRect(rx,right.y+70,rw,mobile?100:92,14,true,true);
+  ctx.fillStyle=s.color;ctx.font='bold 19px Arial';ctx.fillText(s.name,rx+14,right.y+96);
+  ctx.fillStyle='#dbeeff';ctx.font='14px Arial';
+  if(mobile){
+    ctx.fillText('Price: '+fmt(s.price),rx+14,right.y+122);
+    ctx.fillText('Income: '+fmt(s.income)+' / 3s',rx+14,right.y+144);
+    ctx.fillText('Owned: '+s.owned+'   Threat: +'+(1.6+game.selected*0.7).toFixed(1),rx+14,right.y+166);
+  }else{
+    ctx.fillText('Price: '+fmt(s.price),rx+14,right.y+122);
+    ctx.fillText('Passive Income: '+fmt(s.income)+' every 3s',rx+150,right.y+122);
+    ctx.fillText('Owned: '+s.owned,rx+14,right.y+144);
+    ctx.fillText('Threat Gain: +'+(1.6+game.selected*0.7).toFixed(1),rx+150,right.y+144);
+  }
+
+  const buttonsY=mobile?right.y+184:right.y+176;
+  const bw=(rw-12)/2;
+  if(btn(rx,buttonsY,bw,44,'BUY',false)) buyAsset(game.selected);
+  if(btn(rx+bw+12,buttonsY,bw,44,'SELL',false)) sellAsset(game.selected);
+  if(btn(rx,buttonsY+56,rw,48,'HOSTILE TAKEOVER',false)) hostileTakeover();
+
+  const sy=buttonsY+126;
+  ctx.fillStyle='#dff';ctx.font='bold 17px Arial';ctx.fillText('Status',rx,sy);
+  const sh=Math.max(120,right.y+right.h-sy-16);
+  ctx.fillStyle='rgba(255,255,255,.04)';ctx.strokeStyle='rgba(255,255,255,.08)';
+  roundRect(rx,sy+12,rw,sh,14,true,true);
+  ctx.fillStyle='#cfe7ff';ctx.font='14px Arial';
+  const lines=[
+    'Level '+game.level+' / '+MAXLEVEL+' — Reach '+fmt(game.levelTarget)+' empire value to advance.',
+    'Lose if Stability reaches 0 or Debt reaches '+fmt(game.debtCap)+'.',
+    'Passive income arrives every 3 seconds.',
+    'Next income tick: '+game.nextIncomeIn.toFixed(1)+'s',
+    'Next random event: '+game.eventTimer.toFixed(1)+'s',
+    'Next family bill: '+game.billTimer.toFixed(1)+'s',
+    'Best Level Reached: '+bestLevel
+  ];
+  for(let i=0;i<lines.length;i++) ctx.fillText(lines[i],rx+14,sy+38+i*24);
+}
+
+function drawNotices(){
+  let x=22,y=H-160;
+  for(let i=notices.length-1;i>=0;i--){
+    const n=notices[i],a=Math.min(1,n.t);
+    ctx.globalAlpha=a;
+    ctx.fillStyle='rgba(8,16,26,.85)';ctx.strokeStyle='rgba(120,180,255,.2)';
+    roundRect(x,y,Math.min(W*0.54,460),30,10,true,true);
+    ctx.fillStyle=n.col;ctx.font='14px Arial';ctx.textAlign='left';ctx.textBaseline='middle';
+    ctx.fillText(n.text,x+12,y+18);y-=36;
+  }
+  ctx.globalAlpha=1;
+}
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=Math.max(0,p.t);ctx.fillStyle=p.c;ctx.shadowColor=p.c;ctx.shadowBlur=10;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;ctx.shadowBlur=0;
+}
+function drawTouch(){
+  const s=Math.min(W,H),r=s*0.065,pad=18,cx=pad+r*1.8,cy=H-pad-r*1.8,ax=W-pad-r*1.8,ay=H-pad-r*1.8;
+  const defs=[
+    {k:'left',x:cx-r*1.2,y:cy,w:r*1.2,h:r*1.2,l:'◄'},
+    {k:'right',x:cx+r*0.2,y:cy,w:r*1.2,h:r*1.2,l:'►'},
+    {k:'up',x:cx-r*0.5,y:cy-r*1.25,w:r*1.2,h:r*1.2,l:'▲'},
+    {k:'down',x:cx-r*0.5,y:cy+r*0.05,w:r*1.2,h:r*1.2,l:'▼'},
+    {k:'space',x:ax-r*1.5,y:ay-r*0.5,w:r*2.4,h:r*1.2,l:'ACT'}
+  ];
+  for(const b of defs){
+    if(pointer.down&&inRect(pointer.x,pointer.y,{x:b.x,y:b.y,w:b.w,h:b.h}))touchState[b.k]=1;else if(!pointer.down)touchState[b.k]=0;
+    ctx.fillStyle=touchState[b.k]?'rgba(70,180,255,.28)':'rgba(255,255,255,.05)';
+    ctx.strokeStyle=touchState[b.k]?'rgba(100,220,255,.9)':'rgba(170,210,255,.18)';
+    roundRect(b.x,b.y,b.w,b.h,12,true,true);
+    ctx.fillStyle='#dff';ctx.font=`${Math.max(14,r*0.42)}px Arial`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(b.l,b.x+b.w/2,b.y+b.h/2);
+  }
+}
+function pressed(k){return keys[k]||keys['arrow'+k]||touchState[k]}
+
+function control(dt){
+  control.cool=(control.cool||0)-dt;
+  if(control.cool<=0){
+    if(pressed('up')||keys['w']){game.selected=(game.selected-1+game.assets.length)%game.assets.length;control.cool=.16;beep(300,.03,'square',.015);}
+    else if(pressed('down')||keys['s']){game.selected=(game.selected+1)%game.assets.length;control.cool=.16;beep(300,.03,'square',.015);}
+    else if(pressed('left')||keys['a']){sellAsset(game.selected);control.cool=.22;}
+    else if(pressed('right')||keys['d']){buyAsset(game.selected);control.cool=.22;}
+    else if(touchState.space||keys[' ']||keys['spacebar']){hostileTakeover();control.cool=.32;}
+  }
+}
+
+function startGame(){resetGame();state='play';beep(700,.09,'sawtooth',.03);}
+function restartGame(){resetGame();state='play';beep(640,.08,'triangle',.03);}
+
+function drawStart(){
+  drawBG();
+  const cx=W/2,cy=H/2;
+  ctx.fillStyle='rgba(8,14,22,.82)';ctx.strokeStyle='rgba(120,200,255,.28)';ctx.lineWidth=2;
+  roundRect(W*0.12,H*0.14,W*0.76,H*0.72,24,true,true);
+  ctx.textAlign='center';ctx.fillStyle='#eef9ff';
+  ctx.font='bold '+Math.max(34,W*0.045)+'px Arial';ctx.fillText('ASSET DOMINION',cx,cy-140);
+  ctx.fillStyle='#8fe7ff';ctx.font='18px Arial';ctx.fillText('Private Imperial Asset Empire Simulator',cx,cy-102);
+  ctx.fillStyle='#c9dcf0';ctx.font='16px Arial';
+  const lines=[
+    'Start with $10,000 and build a futuristic corporate empire.',
+    'Select assets, then BUY or SELL to grow passive income every 3 seconds.',
+    'Buying more assets raises Threat. High debt and overexpansion hurt Stability.',
+    'Random events strike every 15-20 seconds — including family expenses like tuition and medical bills.',
+    '8 escalating levels. Hit each target to advance — but debt, threat, and event pressure rise every level.',
+    'Lose if Stability hits 0 or Debt exceeds the cap for your level. Best Level Reached is saved.',
+    'Keyboard: Arrows/WASD to select, Left/Right to sell/buy, Space for takeover.',
+    'Touch/Mouse: Tap assets and interface buttons. Fully playable on phones.'
+  ];
+  for(let i=0;i<lines.length;i++)ctx.fillText(lines[i],cx,cy-36+i*28);
+  if(btn(cx-110,cy+150,220,58,'ENTER THE MATRIX',true)) startGame();
+  drawTouch();
+}
+
+function drawEnd(win){
+  drawBG();drawHUD();drawPanels();drawNotices();drawParticles();
+  ctx.fillStyle='rgba(0,0,0,.58)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(8,14,22,.92)';
+  ctx.strokeStyle=win?'rgba(120,255,180,.45)':'rgba(255,100,140,.45)';
+  ctx.lineWidth=2.5;
+  roundRect(W*0.24,H*0.22,W*0.52,H*0.5,22,true,true);
+  ctx.textAlign='center';ctx.fillStyle='#fff';
+  ctx.font='bold '+Math.max(32,W*0.04)+'px Arial';
+  ctx.fillText(win?'EMPIRE ASCENDANT':'EMPIRE COMPROMISED',W/2,H*0.34);
+  ctx.fillStyle=win?'#9ff0b1':'#ff9fb2';ctx.font='18px Arial';
+  ctx.fillText(win?'You conquered all '+MAXLEVEL+' levels of the dominion.':'Your empire collapsed under pressure.',W/2,H*0.42);
+  ctx.fillStyle='#dcecff';ctx.font='17px Arial';
+  ctx.fillText('Final Score: '+Math.floor(game.score)+'   Level Reached: '+game.level+' / '+MAXLEVEL,W/2,H*0.49);
+  ctx.fillText('Empire Value: '+fmt(empireValue()),W/2,H*0.54);
+  ctx.fillText('Debt: '+fmt(game.debt)+'   Stability: '+game.stability.toFixed(0)+'   Best Level Ever: '+bestLevel,W/2,H*0.59);
+  if(btn(W/2-110,H*0.64,220,56,'RESTART GAME',true)) restartGame();
+}
+
+function loop(ts){
+  const dt=Math.min(0.033,(ts-last||16)/1000);last=ts;
+  if(state==='play') update(dt);
+  drawBG();
+  if(state==='start') drawStart();
+  else if(state==='play'){drawHUD();drawPanels();control(dt);drawNotices();drawParticles();drawTouch();}
+  else if(state==='win') drawEnd(true);
+  else if(state==='lose') drawEnd(false);
+  pointer.clicked=false;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+})();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
